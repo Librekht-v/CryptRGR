@@ -1,4 +1,4 @@
-#include "../algorithm_interface.h"
+#include "algorithm_interface.h"
 #include <string>
 #include <vector>
 #include <cstring>
@@ -85,3 +85,184 @@ static void expand_key(const unsigned char key[8], unsigned int round_keys[8]) {
         }
     }
 }
+
+// Шифрование одного 8-байтного блока (Сеть Фейстеля, 32 раунда)
+static void encrypt_block(const unsigned char in[8], unsigned char out[8], unsigned int rkeys[8]) {
+    unsigned int n1 = 0, n2 = 0;
+    for (int i = 0; i < 4; ++i) {
+        n1 |= (in[i] << (8 * i)); // Берём 8 байт и разбиваем их на две половинки
+        n2 |= (in[i + 4] << (8 * i));
+    }
+
+    // Первые 24 раунда: ключи повторяются 3 раза
+    for (int r = 0; r < 24; ++r) {
+        n1 ^= gost_encrypt_round(n2, rkeys[r % 8]); // Ключи повторяются каждые 8 раундов.
+        swap(n1, n2); // Классический обмен половинками в сети Фейстеля
+    }
+
+    // ключи в обратном порядке
+    for (int r = 0; r < 8; ++r) {
+        n1 ^= gost_encrypt_round(n2, rkeys[7 - r]); // XOR
+        swap(n1, n2);
+    }
+
+    // половинки НЕ меняются местами, надо поменять
+    for (int i = 0; i < 4; ++i) {
+        out[i] = (n2 >> (8 * i)) & 0xFF;
+        out[i + 4] = (n1 >> (8 * i)) & 0xFF;
+    }
+}
+
+// Расшифрование одного 8-байтного блока
+static void decrypt_block(const unsigned char in[8], unsigned char out[8], unsigned int rkeys[8]) {
+    unsigned int n1 = 0, n2 = 0;
+    for (int i = 0; i < 4; ++i) {
+        n1 |= (in[i] << (8 * i));// количество бит, на которое нужно сдвинуть число вправо.
+        n2 |= (in[i + 4] << (8 * i));
+    }
+
+    // В расшифровании раунды идут в обратном порядке, а ключи — в прямом для первых 8
+    for (int r = 0; r < 8; ++r) {
+        n1 ^= gost_decrypt_round(n2, rkeys[r]);
+        swap(n1, n2);
+    }
+
+    for (int r = 0; r < 24; ++r) {
+        n1 ^= gost_decrypt_round(n2, rkeys[(23 - r) % 8]);
+        swap(n1, n2);
+    }
+
+    for (int i = 0; i < 4; ++i) {
+        out[i] = (n2 >> (8 * i)) & 0xFF; // 8 единиц
+        out[i + 4] = (n1 >> (8 * i)) & 0xFF;
+    }
+}
+
+// Вспомогательные функции (Паддинг, Hex, Генерация ключа)
+
+static vector<unsigned char> pkcs7_pad(const vector<unsigned char>& data) {
+    size_t pad_len = 8 - (data.size() % 8);
+    vector<unsigned char> res = data;
+    res.insert(res.end(), pad_len, static_cast<unsigned char>(pad_len)); // вставляем в результат N раз N чары 
+    return res;
+}
+
+static vector<unsigned char> pkcs7_unpad(const vector<unsigned char>& data) {
+    if (data.empty()) return {};
+    unsigned char pad_len = data.back(); // длина паддинга
+
+if (pad_len > data.size() || pad_len > 8) return data;
+    return vector<unsigned char>(data.begin(), data.end() - pad_len);
+}
+
+static string bytes_to_hex(const vector<unsigned char>& data) {
+    string res;
+    res.reserve(data.size() * 2);
+    char buf[3];
+    for (unsigned char b : data) {
+        sprintf(buf, "%02x", b); // означает: 2 символа, шестнадцатеричный вид, с ведущим нулём
+        res += buf;
+    }
+    return res;
+}
+
+static vector<unsigned char> hex_to_bytes(const string& hex) {
+    vector<unsigned char> res;
+    res.reserve(hex.size() / 2);
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        unsigned int byte;
+        sscanf(hex.c_str() + i, "%02x", &byte); 
+        res.push_back(static_cast<unsigned char>(byte));
+    }
+    return res;
+}
+
+static void make_key_from_byte(unsigned char key_byte, unsigned char out_key[8]) {
+    for (int i = 0; i < 8; ++i) { // 1 байт ключа в 8 байт
+        out_key[i] = key_byte ^ (i * 0x33);
+    }
+}
+
+
+static string process_string(const string& text, unsigned char key, bool encrypt) {
+    unsigned char raw_key[8];
+    make_key_from_byte(key, raw_key);
+
+    unsigned int rkeys[8];
+    expand_key(raw_key, rkeys);
+
+    vector<unsigned char> data(text.begin(), text.end());
+    if (encrypt) data = pkcs7_pad(data);
+
+    if (!encrypt && data.size() % 8 != 0) return ""; 
+
+    vector<unsigned char> result;
+    result.reserve(data.size());
+
+    for (size_t i = 0; i < data.size(); i += 8) {
+        unsigned char block[8], processed[8];
+        memcpy(block, &data[i], 8); // Копируем 8 байт из вектора data начиная с i в массив block
+
+        if (encrypt) encrypt_block(block, processed, rkeys);  // processed результат шифрования/расшифрования
+        else decrypt_block(block, processed, rkeys);
+
+        result.insert(result.end(), processed, processed + 8); // Вставляем все 8 байт из processed в result
+    }
+
+    if (!encrypt) result = pkcs7_unpad(result);
+
+    return encrypt ? bytes_to_hex(result) : string(result.begin(), result.end()); // или hex или обычная строка
+}
+
+// для обработки байтов, а не строк
+static vector<unsigned char> process_data(const vector<unsigned char>& data, unsigned char key, bool encrypt) {
+    unsigned char raw_key[8];
+    make_key_from_byte(key, raw_key);
+
+    unsigned int rkeys[8];
+    expand_key(raw_key, rkeys);
+
+    vector<unsigned char> work_data = data;
+    if (encrypt) work_data = pkcs7_pad(work_data);
+
+    if (!encrypt && work_data.size() % 8 != 0) return {};
+
+    vector<unsigned char> result;
+    result.reserve(work_data.size());
+
+    for (size_t i = 0; i < work_data.size(); i += 8) {
+        unsigned char block[8], processed[8];
+        memcpy(block, &work_data[i], 8);
+
+        if (encrypt) encrypt_block(block, processed, rkeys);
+        else         decrypt_block(block, processed, rkeys);
+
+        result.insert(result.end(), processed, processed + 8);
+    }
+
+    if (!encrypt) result = pkcs7_unpad(result);
+    return result;
+}
+
+static unsigned char generate_random_key() {
+    static bool seeded = false;
+    if (!seeded) {
+        srand(static_cast<unsigned int>(time(nullptr)));
+        seeded = true;
+    }
+    return (rand() % 255) + 1; // как раз 256 различных 1-байтовых
+}
+
+// Инициализация обратных S-блоков при старте программы
+static struct AutoInit {
+    AutoInit() { init_inv_sboxes(); }
+} s_auto_init;
+
+
+
+
+
+
+
+
+
