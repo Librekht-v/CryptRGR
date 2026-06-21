@@ -12,7 +12,7 @@ Multi-file Encryption Programm
 * Подключение каждого алгоритма как отдельной `.so` библиотеки
 ---
 # Архитектура проекта 
-Структура проекта мультифайловоя
+Структура проекта мультифайловая
 Проект представлен в виде следующих файлов:
 
 ## main & динамический загрузчик
@@ -46,6 +46,6 @@ Multi-file Encryption Programm
 ---
 # Наша команда
 * **gyfttyff** - разработка main.cpp, gost.cpp
-* **Octop186** - разработка shamir.cpp,
+* **Octop186** - разработка shamir.cpp, algorithm_interface.h
 * **Librekht-v** - разработка xor.cpp, тестировщик программы
 * **nikitaumin-ux** - разработка elgamalfull.cpp
